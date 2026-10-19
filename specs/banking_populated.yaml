@@ -1,0 +1,321 @@
+spec_version: 1
+domain: banking
+seed: 42
+request:
+  domain: banking
+  n_customers: 5000
+  functional_areas: [core, lending, payments, aml, fraud]
+  history_start: "2023-01-01"
+  history_end: "2025-12-31"
+  seed: 42
+guardrails:
+  - column: interest_rate
+    max: 0.30
+  - column_glob: "*_score"
+    min: 0
+    max: 1
+  - column_glob: "*amount*"
+    min: 0
+    allow_negative_override: true
+  - column_glob: "*balance*"
+    min: 0
+    allow_negative_override: true
+entities:
+  customer:
+    area: core
+    primary_key: [customer_id]
+    rows:
+      request_key: n_customers
+    columns:
+      - name: customer_id
+        type: id
+        strategy: sequential
+        prefix: C
+        width: 6
+        start: 1
+      - name: segment
+        type: category
+        strategy: categorical
+        values: [retail, affluent, small_business]
+        weights: [0.72, 0.18, 0.10]
+      - name: fico
+        type: integer
+        strategy: normal
+        min: 300
+        max: 850
+        mean: 690
+        std: 45
+        precision: 0
+      - name: annual_income
+        type: float
+        strategy: lognormal
+        min: 20000
+        max: 500000
+        mu: 10.82
+        sigma: 0.45
+        precision: 2
+      - name: credit_limit
+        type: float
+        strategy: correlate_with
+        correlate_with: annual_income
+        correlation: 0.8
+        min: 1000
+        max: 75000
+        precision: 2
+      - name: pep_flag
+        type: boolean
+        strategy: bernoulli
+        p: 0.015
+      - name: opened_on
+        type: datetime
+        strategy: datetime
+  account:
+    area: core
+    primary_key: [account_id]
+    per_parent:
+      parent: customer
+      min: 1
+      max: 3
+    columns:
+      - name: account_id
+        type: id
+        strategy: sequential
+        prefix: A
+        width: 7
+        start: 1
+      - name: customer_id
+        type: fk
+        strategy: foreign_key
+        references: customer.customer_id
+      - name: product_type
+        type: category
+        strategy: categorical
+        values: [checking, savings, credit_card]
+        weights: [0.45, 0.35, 0.20]
+      - name: opened_on
+        type: datetime
+        strategy: datetime
+      - name: current_balance
+        type: float
+        strategy: lognormal
+        min: 0
+        max: 200000
+        mu: 8.4
+        sigma: 1.1
+        precision: 2
+  transaction:
+    area: payments
+    primary_key: [transaction_id]
+    per_parent:
+      parent: account
+      min: 2
+      max: 6
+    columns:
+      - name: transaction_id
+        type: id
+        strategy: sequential
+        prefix: T
+        width: 8
+        start: 1
+      - name: account_id
+        type: fk
+        strategy: foreign_key
+        references: account.account_id
+      - name: customer_id
+        type: id
+        strategy: consistent_with
+        consistent_with: customer.customer_id
+      - name: amount
+        type: float
+        strategy: lognormal
+        min: 1
+        max: 20000
+        mu: 4.1
+        sigma: 1.05
+        precision: 2
+      - name: posted_at
+        type: datetime
+        strategy: strictly_increasing
+        scope: within
+        within: account_id
+      - name: channel
+        type: category
+        strategy: categorical
+        values: [branch, mobile, web, wire]
+        weights: [0.15, 0.40, 0.30, 0.15]
+functional_areas:
+  core:
+    tables: {}
+  payments:
+    tables: {}
+  lending:
+    tables:
+      loan:
+        primary_key: [loan_id]
+        per_parent:
+          parent: customer
+          min: 1
+          max: 2
+        columns:
+          - name: loan_id
+            type: id
+            strategy: sequential
+            prefix: L
+            width: 6
+            start: 1
+          - name: customer_id
+            type: fk
+            strategy: foreign_key
+            references: customer.customer_id
+          - name: fico
+            type: integer
+            strategy: consistent_with
+            consistent_with: customer.fico
+          - name: loan_amount
+            type: float
+            strategy: lognormal
+            min: 2000
+            max: 250000
+            mu: 10.3
+            sigma: 0.55
+            precision: 2
+          - name: interest_rate
+            type: float
+            strategy: normal
+            min: 0.035
+            max: 0.179
+            mean: 0.089
+            std: 0.02
+            precision: 4
+          - name: term_months
+            type: integer
+            strategy: categorical
+            values: [12, 24, 36, 48, 60, 84]
+            weights: [0.05, 0.10, 0.25, 0.15, 0.30, 0.15]
+          - name: origination_date
+            type: datetime
+            strategy: datetime
+      loan_snapshot:
+        primary_key: [snapshot_id]
+        per_parent:
+          parent: loan
+          min: 3
+          max: 5
+        columns:
+          - name: snapshot_id
+            type: id
+            strategy: sequential
+            prefix: S
+            width: 8
+            start: 1
+          - name: loan_id
+            type: fk
+            strategy: foreign_key
+            references: loan.loan_id
+          - name: customer_id
+            type: id
+            strategy: consistent_with
+            consistent_with: customer.customer_id
+          - name: month_index
+            type: integer
+            strategy: sequential
+            scope: within
+            within: loan_id
+            start: 1
+          - name: remaining_balance
+            type: float
+            strategy: strictly_decreasing
+            scope: within
+            within: loan_id
+            min: 0
+            max: 250000
+            precision: 2
+  aml:
+    tables:
+      aml_alert:
+        primary_key: [alert_id]
+        rows:
+          fraction_of: transaction
+          fraction: 0.08
+          min_rows: 1
+        columns:
+          - name: alert_id
+            type: id
+            strategy: sequential
+            prefix: AML
+            width: 7
+            start: 1
+          - name: transaction_id
+            type: fk
+            strategy: foreign_key
+            references: transaction.transaction_id
+            unique: true
+          - name: customer_id
+            type: id
+            strategy: consistent_with
+            consistent_with: transaction.customer_id
+          - name: account_id
+            type: id
+            strategy: consistent_with
+            consistent_with: transaction.account_id
+          - name: amount
+            type: float
+            strategy: consistent_with
+            consistent_with: transaction.amount
+            precision: 2
+          - name: risk_score
+            type: float
+            strategy: normal
+            min: 0.05
+            max: 0.99
+            mean: 0.55
+            std: 0.15
+            precision: 4
+          - name: typology
+            type: category
+            strategy: categorical
+            values: [structuring, rapid_movement, unusual_wire, cash_intensive, third_party]
+            weights: [0.22, 0.18, 0.20, 0.25, 0.15]
+  fraud:
+    tables:
+      fraud_alert:
+        primary_key: [alert_id]
+        per_parent:
+          parent: account
+          min: 0
+          max: 2
+        columns:
+          - name: alert_id
+            type: id
+            strategy: sequential
+            prefix: F
+            width: 7
+            start: 1
+          - name: account_id
+            type: fk
+            strategy: foreign_key
+            references: account.account_id
+          - name: customer_id
+            type: id
+            strategy: consistent_with
+            consistent_with: customer.customer_id
+          - name: risk_score
+            type: float
+            strategy: normal
+            min: 0
+            max: 1
+            mean: 0.42
+            std: 0.18
+            precision: 4
+          - name: channel
+            type: category
+            strategy: categorical
+            values: [card_present, card_not_present, ach, wire]
+            weights: [0.35, 0.40, 0.15, 0.10]
+          - name: suspicion_rank
+            type: integer
+            strategy: strictly_decreasing
+            scope: within
+            within: account_id
+            min: 1
+            max: 50
